@@ -1,5 +1,5 @@
-gem 'eventmachine'
+gem 'torchat'
+
 gem 'em-websocket'
 gem 'eventmachine_httpserver'
-
-gem 'torchat'
+gem 'mimetypes-fu'

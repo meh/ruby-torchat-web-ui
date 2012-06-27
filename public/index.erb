@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>TorChat</title>
+
+	<script>
+		ListenOn = {
+			web: {
+				host: "<%= listens_on[:web][:host] %>",
+				port: <%= listens_on[:web][:port] %>,
+			},
+
+			websocket: {
+				host: "<%= listens_on[:websocket][:host] %>",
+				port: <%= listens_on[:websocket][:port] %>,
+			}
+		};
+	</script>
+	
+	<!-- insert here whatever deps you need -->
+
+	<script src="io.js"></script>
+	<script src="ui.js"></script>
+</head>
+
+<body>
+	<!-- insert here whatever layout you need -->
+</body>
+</html>

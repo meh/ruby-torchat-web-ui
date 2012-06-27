@@ -1,1 +1,3 @@
-// derp ui
+UI = (function () {
+
+})();
