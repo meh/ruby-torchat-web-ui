@@ -2,13 +2,13 @@ IO = (function () {
 	var callbacks = {};
 	var socket;
 
-	function fire (name, arguments) {
+	function fire (name, args) {
 		if (!callbacks[name] instanceof Array) {
 			return;
 		}
 
 		callbacks[name].forEach(function (func) {
-			func.apply(null, arguments);
+			func.call(args);
 		});
 	}
 
@@ -42,15 +42,12 @@ IO = (function () {
 		}
 	}
 
-	function send (type) {
+	function send (type, args) {
 		if (!socket) {
 			return;
 		}
 
-		var arguments = Array.prototype.slice.apply(arguments);
-		    arguments.shift();
-
-		socket.send(JSON.stringify([type, arguments]));
+		socket.send(JSON.stringify([type, args]));
 	}
 
 	return {

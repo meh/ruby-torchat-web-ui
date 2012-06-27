@@ -6,6 +6,7 @@ require 'eventmachine'
 require 'em-websocket'
 require 'evma_httpserver'
 
+require 'json'
 require 'erb'
 require 'mimetype_fu'
 
@@ -71,7 +72,13 @@ class TorchatWebUI
 		def authorize!;  @authorized = true; end
 
 		def post_init
+			onmessage {|msg|
+				daemon.process self, msg
+			}
+		end
 
+		def send_message (type, arguments)
+			send [type, arguments].to_json
 		end
 
 		def unbind
@@ -165,143 +172,133 @@ class TorchatWebUI
 	end
 
 	def process (connection, line)
-		command, rest = line.force_encoding('UTF-8').split(' ', 2)
+		command, arguments = JSON.parse(line)
 
 		case command.downcase.to_sym
 		when :pass
-			if !@password || @password == rest
+			if !@password || @password == arguments.first
 				connection.authorize!
-				connection.send_response "AUTHORIZED #{profile.session.id}"
+				connection.send_message :authorized, profile.session.id
 			end
 
 			return
 		end
 
 		unless connection.authorized?
-			connection.send_response "UNAUTHORIZED #{command}"
+			connection.send_message :unauthorized, command
 			return
 		end
 
 		case command.downcase.to_sym
 		when :whoami
-			connection.send_response "WHOAMI #{profile.id}"
+			connection.send_message :whoami, profile.id
 
 		when :list
-			connection.send_response "LIST #{profile.buddies.keys.join(' ')}"
+			connection.send_message :list, profile.buddies.keys
 
 		when :remove
-			profile.buddies.remove rest
+			profile.buddies.remove arguments
 
 		when :add
-			attribute, rest = rest.split(' ')
-
-			if rest && attribute == 'tmp'
-				profile.buddies.add_temporary rest
+			if arguments['temporary']
+				profile.buddies.add_temporary arguments['id']
 			else
-				profile.buddies.add attribute
+				profile.buddies.add arguments['id']
 			end
 
 		when :typing
-			id, mode = rest.split(' ')
-
-			if buddy = profile.buddies[id]
-				buddy.send_typing(mode)
+			if buddy = profile.buddies[arguments['id']]
+				buddy.send_typing(arguments['mode'])
 			end
 
 		when :status
-			if rest && Torchat.normalize_id(rest, true)
-				if buddy = profile.buddies[rest]
-					connection.send_response "#{rest} STATUS #{buddy.status}"
+			if Torchat.normalize_id(arguments, true)
+				if buddy = profile.buddies[arguments]
+					connection.send_message :status, id: buddy.id, status: buddy.status
 				end
 			else
-				profile.status = rest
+				profile.status = arguments
 			end
 
 		when :client
-			if buddy = profile.buddies[rest]
+			if buddy = profile.buddies[arguments]
 				if buddy.client.name
-					connection.send_response "#{rest} CLIENT_NAME #{buddy.client.name}"
+					connection.send_message :client_name, id: buddy.id, name: buddy.client.name
 				end
 
 				if buddy.client.version
-					connection.send_response "#{rest} CLIENT_VERSION #{buddy.client.version}"
+					connection.send_message :client_version, id: buddy.id, version: buddy.version
 				end
 			end
 
 		when :name
-			if rest && Torchat.normalize_id(rest, true)
-				if buddy = profile.buddies[rest]
-					connection.send_response "#{rest} NAME #{buddy.name}"
+			if arguments && Torchat.normalize_id(arguments, true)
+				if buddy = profile.buddies[arguments]
+					connection.send_message :name, id: buddy.id, name: buddy.name
 				end
 			else
-				profile.name = rest
+				profile.name = arguments
 			end
 
 		when :description
-			if rest && Torchat.normalize_id(rest, true)
+			if arguments && Torchat.normalize_id(arguments, true)
 				if buddy = profile.buddies[rest]
-					connection.send_response "#{rest} DESCRIPTION #{buddy.description}"
+					connection.send_message :description, id: buddy.id, description: buddy.description
 				end
 			else
-				profile.description = rest
+				profile.description = arguments
 			end
 
 		when :message
-			profile.send_message_to *rest.split(' ', 2)
+			profile.send_message_to arguments['id'], arguments['message']
 
 		when :block
-			profile.buddies[rest].block!
+			profile.buddies[arguments].block!
 
 		when :allow
-			profile.buddies[rest].allow!
+			profile.buddies[arguments].allow!
 
 		when :broadcast
-			profile.send_broadcast rest
+			profile.send_broadcast arguments
 
 		when :groupchats
-			connection.send_response "GROUPCHATS #{profile.group_chats.keys.join(' ')}"
+			connection.send_message :groupchats, profile.group_chats.keys
 
 		when :groupchat_participants
-			if group_chat = profile.group_chats[rest]
-				connection.send_response "GROUPCHAT_PARTICIPANTS #{group_chat.id} #{group_chat.participants.keys.join ' '}"
+			if group_chat = profile.group_chats[arguments]
+				connection.send_message :groupchat_participants, id: group_chat.id, participants: group_chat.participants.keys
 			end
 
 		when :groupchat_invite
-			group_chat, buddy = rest.split ' '
-
-			if buddy
-				if (buddy = profile.buddies[buddy]) && (group_chat = profile.group_chats[group_chat])
+			if arguments['groupchat_id']
+				if (buddy = profile.buddies[arguments['buddy_id']]) && (group_chat = profile.group_chats[arguments['groupchat_id']])
 					group_chat.invite(buddy)
 				end
 			else
-				if buddy = profile.buddies[group_chat]
+				if buddy = profile.buddies[arguments['buddy_id']]
 					profile.group_chats.create.invite(buddy)
 				end
 			end
 
 		when :groupchat_leave
-			group_chat, reason = rest.split ' ', 2
-
-			if group_chat = profile.group_chats[group_chat]
-				group_chat.leave reason
+			if group_chat = profile.group_chats[arguments['id']]
+				group_chat.leave arguments['reason']
 			end
 
 		when :groupchat_message
 			group_chat, message = rest.split ' ', 2
 
-			if group_chat = profile.group_chats[group_chat]
-				group_chat.send_message message
+			if group_chat = profile.group_chats[arguments['id']]
+				group_chat.send_message arguments['message']
 			end
 
 		when :latency
-			id, rest = rest.split ' ', 2
-
-			if (buddy = profile.buddies[id]) && buddy.supports?(:latency)
-				@pings[id][buddy.latency.ping!.id] = [Time.now, rest]
+			if (buddy = profile.buddies[arguments['id']]) && buddy.supports?(:latency)
+				@pings[id][buddy.latency.ping!.id] = [Time.now, arguments['payload']]
 			end
 
 		else
-			connection.send_response "UNIMPLEMENTED #{command}"
+			connection.send_message :unimplemented, command
 		end
 	rescue => e
 		Torchat.debug e
@@ -311,21 +308,19 @@ class TorchatWebUI
 		return unless @buddies.include? packet.from
 
 		if packet.type == :message
-			packet.to_s.lines.each {|line|
-				send_everyone "#{packet.from.id} MESSAGE #{line}"
-			}
+			send_everyone :message, id: packet.from.id, message: packet.to_s
 		elsif packet.type == :status
-			send_everyone "#{packet.from.id} STATUS #{packet}"
+			send_everyone :status, id: packet.from.id, status: packet.to_s
 		elsif packet.type == :client
-			send_everyone "#{packet.from.id} CLIENT_NAME #{packet}"
+			send_everyone :client_name, id: packet.from.id, name: packet.to_s
 		elsif packet.type == :version
-			send_everyone "#{packet.from.id} CLIENT_VERSION #{packet}"
+			send_everyone :client_version, id: packet.from.id, version: packet.to_s
 		elsif packet.type == :profile_name && !packet.nil?
-			send_everyone "#{packet.from.id} NAME #{packet}"
+			send_everyone :name, id: packet.from.id, name: packet.to_s
 		elsif packet.type == :profile_text && !packet.nil?
-			send_everyone "#{packet.from.id} DESCRIPTION #{packet}"
+			send_everyone :description, id: packet.from.id, description: packet.to_s
 		elsif packet.type == :remove_me
-			send_everyone "#{packet.from.id} REMOVE"
+			send_everyone :remove, packet.from.id
 		end
 	end
 
@@ -340,36 +335,36 @@ class TorchatWebUI
 	end
 
 	def typing (buddy, mode)
-		send_everyone "#{buddy.id} TYPING #{mode}"
+		send_everyone :typing, id: buddy.id, mode: mode
 	end
 
 	def broadcast (message)
-		send_everyone "BROADCAST #{message}"
+		send_everyone :broadcast, message
 	end
 
 	def group_chat (what, group_chat, buddy = nil, *args)
 		if what == :create
-			send_everyone "GROUPCHAT_CREATE #{group_chat.id}"
+			send_everyone :groupchat_create, group_chat.id
 		elsif what == :invite
-			send_everyone "#{buddy.id} GROUPCHAT_INVITE #{group_chat.id}"
+			send_everyone :groupchat_invite, groupchat_id: group_chat.id, buddy_id: buddy.id
 		elsif what == :join
-			send_everyone "#{buddy.id} GROUPCHAT_JOIN #{group_chat.id}#{" #{args.first.id}" if args.first}"
+			send_everyone :groupchat_join, groupchat_id: group_chat.id, buddy_id: buddy.id, invitor_id: args.first
 		elsif what == :joined
-			send_everyone "GROUPCHAT_JOINED #{group_chat.id}"
-			send_everyone "GROUPCHAT_PARTICIPANTS #{group_chat.id} #{group_chat.participants.keys.join ' '}"
+			send_everyone :groupchat_joined, group_chat.id
+			send_everyone :groupchat_participants, id: group_chat.id, participants: group_chat.participants.keys
 		elsif what == :leave
-			send_everyone "#{buddy.id} GROUPCHAT_LEAVE #{group_chat.id}#{" #{args.first}" if args.first}"
+			send_everyone :groupchat_leave, groupchat_id: group_chat.id, buddy_id: buddy.id, reason: args.first
 		elsif what == :left
-			send_everyone "GROUPCHAT_LEFT #{group_chat.id} #{args.first}"
+			send_everyone :groupchat_left, id: group_chat.id, reason: args.first
 		elsif what == :message
-			send_everyone "#{buddy.id} GROUPCHAT_MESSAGE #{group_chat.id} #{args.first}"
+			send_everyone :groupchat_message, groupchat_id: group_chat.id, buddy_id: buddy.id, message: args.first
 		elsif what == :destroy
-			send_everyone "GROUPCHAT_DESTROY #{group_chat.id}"
+			send_everyone :groupchat_destroy, group_chat.id
 		end
 	end
 
 	def latency (buddy, amount, id)
-		send_everyone "#{buddy.id} LATENCY #{@pings[buddy.id].delete(id).last}"
+		send_everyone :latency, id: buddy.id, payload: @pings[buddy.id].delete(id).last
 	end
 
 	def cleanup!
@@ -387,24 +382,29 @@ class TorchatWebUI
 	def connected (buddy)
 		@buddies << buddy
 
-		send_everyone "#{buddy.id} CONNECTED"
+		send_everyone :connected, id: buddy.id
 
-		send_everyone "#{buddy.id} NAME #{buddy.name}"               if buddy.name
-		send_everyone "#{buddy.id} DESCRIPTION #{buddy.description}" if buddy.description
+		if buddy.name
+			send_everyone :name, id: buddy.id, name: buddy.name
+		end
+
+		if buddy.description
+			send_everyone :description, id: buddy.id, description: buddy.description
+		end
 
 		if buddy.client.name
-			send_everyone "#{buddy.id} CLIENT_NAME #{buddy.client.name}"
+			send_everyone :client_name, id: buddy.id, name: buddy.client.name
 		end
 
 		if buddy.client.version
-			send_everyone "#{buddy.id} CLIENT_VERSION #{buddy.client.version}"
+			send_everyone :client_version, id: buddy.id, version: buddy.client.version
 		end
 	end
 
 	def disconnected (buddy)
 		return unless @buddies.include? buddy
 
-		send_everyone "#{buddy.id} DISCONNECTED"
+		send_everyone :disconnected, buddy.id
 
 		@buddies.delete buddy
 	end
@@ -412,14 +412,14 @@ class TorchatWebUI
 	def removed (buddy)
 		return unless @buddies.include? buddy
 
-		send_everyone "#{buddy.id} REMOVE"
+		send_everyone :remove, buddy.id
 	end
 
-	def send_everyone (text, even_unauthorized = false)
+	def send_everyone (type, arguments = nil, even_unauthorized = false)
 		@connections.each {|connection|
 			next unless connection.authorized? || even_unauthorized
 
-			connection.send_response text
+			connection.send_message type, arguments
 		}
 	end
 end
